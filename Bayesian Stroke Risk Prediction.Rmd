@@ -1,0 +1,603 @@
+---
+title: "Project Bayes"
+author: "Gabriella Clairine"
+date: "2024-12-25"
+output: html_document
+---
+
+Folder for Data Samples: [project bayes](https://gabriellaclairine-my.sharepoint.com/:f:/g/personal/gabriellaclairine_gabriellaclairine_onmicrosoft_com/Ej1nsTVrRMhCg9ecOZ5F5ngBXFiBmhhi-cfCiVyE8FoTkQ?e=7ugn6Z)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r warning=FALSE}
+library(rjags)
+library(coda)
+library(ggplot2)
+library(tidyverse)
+library(caret)
+```
+
+```{r}
+df_raw <- read.csv("healthcare-dataset-stroke-data.csv")
+head(df_raw)
+```
+
+```{r}
+str(df_raw)
+```
+
+```{r}
+df <- subset(df_raw, select=-id)
+df$bmi <- as.numeric(df$bmi)
+```
+
+```{r}
+names(df)
+```
+
+```{r}
+categorical_cols <- c("gender", "hypertension", "heart_disease", "ever_married", 
+                      "work_type", "Residence_type", "smoking_status")
+
+numerical_cols <- c("age", "avg_glucose_level", "bmi")
+```
+
+```{r}
+# check missing value per column
+colSums(is.na(df))
+df$bmi[is.na(df$bmi)] <- mean(df$bmi, na.rm = TRUE)
+colSums(is.na(df))
+```
+
+```{r}
+summary(df)
+```
+
+```{r}
+for (col in categorical_cols) {
+  cat(paste(col, ":\n", toString(unique(df[[col]])), "\n\n"))
+}
+```
+
+```{r}
+df <- df[df$gender != "Other", ]
+df_encode <- df
+```
+
+```{r}
+onehot_cols <- c("work_type", "Residence_type", "smoking_status")
+
+# Create dummy variables with drop-first behavior
+dummy_cols <- dummyVars(~., data = df_encode[, onehot_cols], fullRank = TRUE)
+
+# Transform the data with dummy variables
+df_onehot <- predict(dummy_cols, newdata = df_encode)
+
+# Convert to a dataframe and append to the original dataframe
+df_encode <- cbind(df_encode, df_onehot)
+
+# Optionally, remove the original categorical columns
+df_encode <- df_encode[, !(names(df_encode) %in% onehot_cols)]
+
+# Handle remaining categorical columns
+others_cols <- setdiff(categorical_cols, onehot_cols) # Exclude one-hot columns
+for (col in others_cols) {
+  df_encode[[col]] <- as.numeric(as.factor(df_encode[[col]]))
+}
+
+head(df_encode)
+```
+
+```{r}
+str(df_encode)
+```
+
+```{r}
+# Scale numerical columns
+df_encode[numerical_cols] <- scale(df_encode[numerical_cols])
+head(df_encode)
+```
+
+```{r}
+table(df_encode$stroke)
+```
+
+```{r}
+Y <- df_encode$stroke  # Outcome variable
+X <- as.matrix(df_encode[, setdiff(names(df_encode), "stroke")])
+
+# Predictor variables
+n <- nrow(X)  # Number of observations
+p <- ncol(X)  # Number of predictors
+```
+
+```{r}
+chains <- 2
+```
+
+```{r}
+model_string <- "
+model {
+  # likelihood
+  for (i in 1:n) {
+    Y[i] ~ dbern(pi[i])
+    logit(pi[i]) <- beta[1] +
+                    X[i,1]*beta[2] +
+                    X[i,2]*beta[3] +
+                    X[i,3]*beta[4] +
+                    X[i,4]*beta[5] +
+                    X[i,5]*beta[6] +
+                    X[i,6]*beta[7] +
+                    X[i,7]*beta[8] +
+                    X[i,8]*beta[9] +
+                    X[i,9]*beta[10] +
+                    X[i,10]*beta[11] +
+                    X[i,11]*beta[12] +
+                    X[i,12]*beta[13] +
+                    X[i,13]*beta[14] +
+                    X[i,14]*beta[15] +
+                    X[i,15]*beta[16]
+  }
+  
+  # Log-likelihood for WAIC
+  for (i in 1:n) {
+    loglik[i] <- Y[i] * log(pi[i]) + (1 - Y[i]) * log(1 - pi[i])  # Manual log-likelihood for each observation
+  }
+
+  # Deviance for DIC
+  deviance <- -2 * sum(loglik)  # Sum of log-likelihoods for all observations
+  
+  # prior
+  for (j in 1:16) {
+    beta[j] ~ dnorm(0, 0.01)
+  }
+}
+"
+```
+
+```{r}
+# Data for JAGS
+data <- list(
+  Y = Y,
+  X = X,
+  n = n
+)
+```
+
+beta_samples1
+
+```{r}
+# Load the saved model from the RDS file
+model <- readRDS("model.rds")
+
+# Load the beta samples (corrected naming convention)
+beta_samples1 <- readRDS("beta_samples1.rds")
+
+# Load the loglik and deviance samples (corrected naming convention)
+loglik_deviance_samples1 <- readRDS("loglik_deviance_samples1.rds")
+```
+
+```{r}
+# Extract values from summary(samples)
+start_val <- summary(beta_samples1)$start
+end_val <- summary(beta_samples1)$end
+thin_val <- summary(beta_samples1)$thin
+nchain_val <- summary(beta_samples1)$nchain
+
+# Print each value individually
+cat("Start value:", start_val, "\n")
+cat("End value:", end_val, "\n")
+cat("Thinning interval:", thin_val, "\n")
+cat("Number of chains:", nchain_val, "\n")
+```
+
+```{r}
+# Calculate sample size per chain
+sample_size_per_chain <- (end_val - start_val) / thin_val + 1
+
+# Calculate total sample size across all chains
+total_sample_size <- nchain_val * sample_size_per_chain
+
+# Print the total sample size
+cat("Sample size per chain:", sample_size_per_chain, "\n")
+cat("Total sample size across all chains:", total_sample_size, "\n")
+```
+
+```{r eval=FALSE}
+# JAGS model
+model <- jags.model(
+  textConnection(model_string),
+  data = data,
+  n.chains = chains
+  )
+update(model, 1000) 
+```
+
+```{r eval=FALSE}
+# Sample only 'beta' parameters
+beta_samples1 <- coda.samples(
+  model,
+  variable.names = c("beta"),
+  n.iter = 2000,
+  n.thin = 5
+)
+```
+
+```{r}
+# Summary of beta samples
+summary(beta_samples1)
+```
+
+**1. Gambaran Umum Model**\
+Model ini menggunakan beberapa variabel prediktor (seperti jenis kelamin, usia, hipertensi, penyakit jantung, dan lainnya) untuk memprediksi variabel respons (misalnya, kejadian tertentu seperti stroke atau kondisi kesehatan). Parameter (beta) menunjukkan hubungan antara masing-masing variabel prediktor dengan variabel respons, di mana nilai positif menunjukkan hubungan positif, dan nilai negatif menunjukkan hubungan negatif.
+
+**2. Interpretasi Parameter**
+
+-   **Intercept (beta[1]):**\
+    Nilai rata-rata intercept adalah -3.97. Ini menunjukkan log odds dasar (tanpa mempertimbangkan variabel lainnya) cukup rendah. Artinya, tanpa pengaruh variabel lain, probabilitas kejadian cukup kecil.
+
+-   **Jenis Kelamin (beta[2]):**\
+    Koefisien rata-rata sebesar -0.014 menunjukkan bahwa jenis kelamin tidak memiliki pengaruh signifikan terhadap probabilitas kejadian. Interval kepercayaan juga meliputi nol, memperkuat bahwa variabel ini mungkin tidak signifikan.
+
+-   **Usia (beta[3]):**\
+    Koefisien rata-rata 1.688 menunjukkan bahwa semakin tua usia, semakin tinggi kemungkinan kejadian. Hal ini terlihat signifikan karena seluruh interval kepercayaan berada di atas nol.
+
+-   **Hipertensi (beta[4]):**\
+    Nilai koefisien rata-rata 0.392 menunjukkan bahwa memiliki hipertensi meningkatkan probabilitas kejadian. Variabel ini juga signifikan karena interval kepercayaannya positif.
+
+-   **Penyakit Jantung (beta[5]):**\
+    Koefisien rata-rata sebesar 0.267 menunjukkan hubungan positif dengan kejadian. Meski demikian, pengaruhnya tidak sebesar variabel usia atau hipertensi.
+
+-   **Status Pernikahan (beta[6]):**\
+    Koefisien rata-rata -0.187 menunjukkan bahwa orang yang pernah menikah memiliki probabilitas kejadian lebih rendah dibandingkan yang belum pernah menikah. Namun, pengaruhnya kecil dan tidak sepenuhnya signifikan (interval mencakup nol).
+
+-   **Rata-rata Glukosa (beta[7]):**\
+    Koefisien 0.184 menunjukkan bahwa peningkatan rata-rata glukosa berhubungan dengan peningkatan probabilitas kejadian. Variabel ini cukup signifikan.
+
+-   **BMI (beta[8]):**\
+    Koefisien rata-rata 0.019 menunjukkan hubungan yang sangat kecil antara BMI dan kejadian. Pengaruhnya hampir tidak signifikan.
+
+-   **Jenis Pekerjaan (beta[9] hingga beta[12]):**
+
+    -   Pekerjaan di sektor pemerintah (beta[9]) memiliki koefisien negatif (-0.532), tetapi dengan variabilitas tinggi sehingga tidak cukup signifikan.
+
+    -   Tidak pernah bekerja (beta[10]) memiliki pengaruh negatif yang sangat besar (-6.400). Namun, interval kepercayaannya luas, menunjukkan ketidakpastian tinggi.
+
+    -   Pekerjaan di sektor swasta (beta[11]) dan wiraswasta (beta[12]) memiliki pengaruh negatif, tetapi tidak terlalu signifikan.
+
+-   **Tipe Tempat Tinggal (beta[13]):**\
+    Orang yang tinggal di daerah perkotaan memiliki koefisien positif kecil (0.084), menunjukkan kemungkinan sedikit lebih tinggi dibandingkan daerah pedesaan.
+
+-   **Status Merokok (beta[14] hingga beta[16]):**
+
+    -   Tidak pernah merokok (beta[14]) memiliki koefisien negatif (-0.207), menunjukkan probabilitas kejadian lebih rendah dibandingkan perokok aktif.
+
+    -   Perokok aktif (beta[15]) memiliki koefisien positif (0.111), yang artinya ada sedikit peningkatan risiko.
+
+    -   Status merokok yang tidak diketahui (beta[16]) memiliki pengaruh negatif kecil (-0.071) tetapi tidak signifikan.
+
+**3. Kesimpulan**
+
+-   Variabel yang paling signifikan dalam memprediksi kejadian adalah **usia**, **hipertensi**, dan **glukosa rata-rata**.
+
+-   Beberapa variabel, seperti jenis kelamin, status pernikahan, dan tipe pekerjaan, memiliki pengaruh yang lebih kecil atau tidak signifikan.
+
+-   Model ini menunjukkan hubungan log odds antara variabel-variabel prediktor dan probabilitas kejadian, dengan beberapa variabel memberikan pengaruh yang lebih besar dibandingkan yang lain.
+
+```{r}
+#Graphical Convergence Diagnostics
+par(mar=c(1,1,1,1))
+plot(beta_samples1)
+```
+
+```{r}
+par(mar=c(1,1,1,1))
+autocorr.plot(beta_samples1)
+```
+
+```{r}
+# Autocorrelation on chain 1
+autocorr(beta_samples1[[1]],lag=5)
+```
+
+```{r}
+effectiveSize(beta_samples1)
+```
+
+### **Interpretasi Nilai-Nilai Tertentu:**
+
+-   **Nilai ESS rendah:**
+
+    -   `beta[1]` (11.62471), `beta[9]` (14.71162), `beta[11]` (14.38632), `beta[12]` (15.32870), dan `beta[13]` (798.08604) memiliki nilai ESS yang relatif rendah. Nilai-nilai ini menunjukkan bahwa rantai MCMC untuk parameter-parameter ini mungkin memiliki autokorelasi yang tinggi, sehingga dibutuhkan lebih banyak iterasi atau thinning untuk meningkatkan ukuran sampel efektif.
+
+-   **Nilai ESS tinggi:**
+
+    -   Parameter seperti `beta[7]` (1294.90251), `beta[8]` (1728.28197), `beta[10]` (1980.03751), dan `beta[14]` (539.75517) memiliki nilai ESS yang lebih tinggi. Ini menunjukkan bahwa rantai MCMC untuk parameter-parameter ini lebih efektif dan telah menghasilkan sampel yang lebih independen, yang berarti sudah lebih baik dalam hal konvergensi.
+
+### **Kesimpulan Umum:**
+
+-   Untuk sebagian besar parameter (terutama `beta[1]`, `beta[9]`, `beta[11]`, dll.), **ukuran sampel efektif (ESS)** cukup rendah, yang menunjukkan bahwa beberapa rantai MCMC mungkin membutuhkan lebih banyak iterasi atau teknik sampling yang lebih baik untuk memastikan proses konvergensi yang lebih baik.
+
+-   Untuk parameter seperti `beta[7]`, `beta[8]`, dan `beta[10]`, nilai ESS-nya tinggi, yang menunjukkan bahwa parameter-parameter ini sudah berbaur dengan baik dan estimasi sampelnya lebih dapat diandalkan.
+
+```{r}
+gelman.diag(beta_samples1)
+```
+
+```{r}
+geweke.diag(beta_samples1[1])
+geweke.diag(beta_samples1[2])
+```
+
+```{r eval=FALSE}
+# Sample 'loglik' and 'deviance' for calculating WAIC and DIC
+loglik_deviance_samples1 <- coda.samples(
+  model,
+  variable.names = c("loglik", "deviance"),
+  n.iter = 2000,
+  n.thin = 5
+)
+```
+
+```{r}
+# Function to calculate WAIC and DIC
+calc_daic <- function(samples) {
+  
+  # Input: 
+  # samples: A matrix or list of MCMC samples containing log-likelihood ('loglik') and deviance ('deviance') values.
+  #          This object is typically obtained using coda.samples() with 'loglik' and 'deviance' as monitored variables.
+  
+  # Convert samples to a matrix
+  log_likelihood_samples <- as.matrix(samples)[, grep("loglik", colnames(as.matrix(samples)))]
+  
+  # Step 1: Compute the mean log-likelihood for each observation (lppd)
+  mean_log_likelihood <- apply(log_likelihood_samples, 2, mean)
+  
+  # Step 2: Compute the variance of the log-likelihood for each observation
+  variance_log_likelihood <- apply(log_likelihood_samples, 2, var)
+  
+  # Step 3: Calculate Log pointwise predictive density (lppd)
+  lppd <- sum(mean_log_likelihood)
+  
+  # Step 4: Calculate the effective number of parameters (p_waic)
+  p_waic <- sum(variance_log_likelihood)
+  
+  # Step 5: Calculate WAIC using the formula
+  WAIC <- -2 * (lppd - p_waic)
+  
+  # Output: 
+  # WAIC value: The computed WAIC score that combines the log-likelihood and a penalty for model complexity.
+  #             Lower values of WAIC indicate a better balance of fit and model simplicity.
+  
+  # Print WAIC result
+  cat("WAIC:", WAIC, "\n")
+  
+  # Return the WAIC value
+  return(WAIC)
+}
+```
+
+```{r eval=FALSE}
+# Save the compiled model to an RDS file
+saveRDS(model, file = "model.rds")
+
+# Save the beta samples (corrected naming convention)
+saveRDS(beta_samples1, file = "beta_samples1.rds")
+
+# Save the loglik and deviance samples (corrected naming convention)
+saveRDS(loglik_deviance_samples1, file = "loglik_deviance_samples1.rds")
+```
+
+```{r}
+WAIC1 <- calc_daic(loglik_deviance_samples1)
+```
+
+```{r}
+# Load DIC from the RDS file
+DIC1 <- readRDS("DIC1.rds")
+
+# DIC1 <- dic.samples(model, n.iter = 2000, n.thin = 5)
+DIC1
+
+# Save DIC to an RDS file
+saveRDS(DIC1, file = "DIC1.rds")
+```
+
+```{r}
+model_string_updated <- "
+model {
+  # likelihood
+  for (i in 1:n) {
+    Y[i] ~ dbern(pi[i])  # Bernoulli likelihood for binary outcome
+    logit(pi[i]) <- beta[1] +  # Intercept
+                    beta[2] * X[i,1] +  # Gender
+                    beta[3] * X[i,2] +  # Age
+                    beta[4] * X[i,3] +  # Hypertension
+                    beta[5] * X[i,4] +  # Heart Disease
+                    beta[6] * X[i,5] +  # Ever Married
+                    beta[7] * X[i,6] +  # Average Glucose Level
+                    beta[8] * X[i,7] +  # BMI
+                    beta[9] * X[i,8] +  # work_typeGovt_job
+                    beta[10] * X[i,9] +  # work_typeNever_worked
+                    beta[11] * X[i,10] +  # work_typePrivate
+                    beta[12] * X[i,11] +  # work_typeSelf-employed
+                    beta[13] * X[i,12] +  # Residence_typeUrban
+                    beta[14] * X[i,13] +  # smoking_statusnever_smoked
+                    beta[15] * X[i,14] +  # smoking_statussmokes
+                    beta[16] * X[i,15]  # smoking_statusUnknown
+  }
+
+  # Log-likelihood for WAIC
+  for (i in 1:n) {
+    loglik[i] <- Y[i] * log(pi[i]) + (1 - Y[i]) * log(1 - pi[i])  # Manual log-likelihood for each observation
+  }
+
+  # Deviance for DIC
+  deviance <- -2 * sum(loglik)  # Sum of log-likelihoods for all observations
+
+  # priors
+  beta[1] ~ dnorm(0, 0.001)  # Intercept
+  beta[2] ~ dnorm(0, 0.01)  # Gender
+  beta[3] ~ dnorm(0.1, 0.01)  # Age
+  beta[4] ~ dnorm(0.5, 0.01)  # Hypertension
+  beta[5] ~ dnorm(0.3, 0.01)  # Heart Disease
+  beta[6] ~ dnorm(0, 0.01)  # Ever Married
+  beta[7] ~ dnorm(0.1, 0.01)  # Average Glucose Level
+  beta[8] ~ dnorm(0, 0.01)  # BMI
+  beta[9] ~ dnorm(0, 0.01)  # work_typeGovt_job
+  beta[10] ~ dnorm(0, 0.01)  # work_typeNever_worked
+  beta[11] ~ dnorm(0, 0.01)  # work_typePrivate (Neutral prior)
+  beta[12] ~ dnorm(0, 0.01)  # work_typeSelf-employed
+  beta[13] ~ dnorm(0, 0.01)  # Residence_typeUrban
+  beta[14] ~ dnorm(0, 0.01)  # smoking_statusnever_smoked
+  beta[15] ~ dnorm(0.3, 0.01)  # smoking_statussmokes
+  beta[16] ~ dnorm(0, 0.01)  # smoking_statusUnknown
+}
+"
+```
+
+-   **Intercept (`beta[1]`)**: Flexible prior, as we have no strong knowledge about baseline risk.
+
+-   **Gender (`beta[2]`)**: Neutral prior, assuming no strong effect on stroke risk.
+
+-   **Age (`beta[3]`)**: Positive prior, reflecting that stroke risk increases with age.
+
+-   **Hypertension (`beta[4]`)**: Strong positive prior, as hypertension is a major risk factor.
+
+-   **Heart Disease (`beta[5]`)**: Positive prior, as heart disease increases stroke risk.
+
+-   **Ever Married (`beta[6]`)**: Neutral prior, as marital status has little direct effect.
+
+-   **Average Glucose Level (`beta[7]`)**: Positive prior, reflecting its association with stroke risk.
+
+-   **BMI (`beta[8]`)**: Neutral prior, as its effect on stroke risk is unclear.
+
+-   **Work Type (`beta[9]` to `beta[12]`)**: Neutral priors, as work type likely has minimal effect on stroke risk.
+
+-   **Residence Type (`beta[13]`)**: Neutral prior, as urban vs. rural residence has an uncertain effect.
+
+-   **Smoking Status**:
+
+    -   **Never Smoked (`beta[14]`)**: Neutral prior, assuming little effect or protective.
+
+    -   **Smokes (`beta[15]`)**: Positive prior, as smoking is a significant risk factor.
+
+    -   **Unknown (`beta[16]`)**: Neutral prior, to let data determine the effect.
+
+```{r}
+model_updated <- readRDS("model_updated.rds")
+beta_samples2 <- readRDS("beta_samples2.rds")
+loglik_deviance_samples2 <- readRDS("loglik_deviance_samples2.rds")
+```
+
+```{r eval=FALSE}
+model_updated <- jags.model(
+  textConnection(model_string_updated),
+  data = data,
+  n.chains = chains
+  )
+update(model_updated, 1000) 
+```
+
+```{r eval=FALSE}
+# Sample only 'beta' parameters
+beta_samples2 <- coda.samples(
+  model_updated,
+  variable.names = c("beta"),
+  n.iter = 2000,
+  n.thin = 5
+)
+```
+
+```{r}
+# Summary of beta samples
+summary(beta_samples2)
+```
+
+```{r}
+par(mar=c(1,1,1,1))
+plot(beta_samples2)
+```
+
+```{r}
+par(mar=c(1,1,1,1))
+autocorr.plot(beta_samples2)
+```
+
+```{r}
+autocorr(beta_samples2[[2]],lag=5)
+```
+
+```{r}
+effectiveSize(beta_samples2)
+```
+
+```{r}
+gelman.diag(beta_samples2)
+```
+
+```{r}
+geweke.diag(beta_samples2[1])
+geweke.diag(beta_samples2[2])
+```
+
+```{r eval=FALSE}
+# Sample 'loglik' and 'deviance' for calculating WAIC and DIC
+loglik_deviance_samples2 <- coda.samples(
+  model_updated,
+  variable.names = c("loglik", "deviance"),
+  n.iter = 2000,
+  n.thin = 5
+)
+```
+
+```{r eval=FALSE}
+saveRDS(model_updated, file = "model_updated.rds")
+saveRDS(beta_samples2, file = "beta_samples2.rds")
+saveRDS(loglik_deviance_samples2, file = "loglik_deviance_samples2.rds")
+```
+
+```{r}
+WAIC2 <- calc_daic(loglik_deviance_samples2)
+```
+
+```{r}
+DIC2 <- readRDS("DIC2.rds")
+
+# DIC2 <- dic.samples(model_updated, n.iter = 2000, n.thin = 5)
+DIC2
+
+# saveRDS(DIC2, file = "DIC2.rds")
+```
+
+**. Gambaran Umum WAIC dan DIC**
+
+-   **WAIC (Watanabe-Akaike Information Criterion):**\
+    Metode untuk mengevaluasi model berdasarkan kompleksitas dan kesesuaian dengan data. Semakin kecil nilai WAIC, semakin baik model tersebut menjelaskan data tanpa overfitting.
+
+-   **DIC (Deviance Information Criterion):**\
+    Serupa dengan WAIC, DIC mengukur kualitas model dengan mempertimbangkan fit dan kompleksitas model. Sama seperti WAIC, nilai DIC yang lebih kecil menunjukkan model yang lebih baik.
+
+**2. Membandingkan Model 1 dan Model 2**
+
+-   **WAIC:**
+
+    -   Model 1 memiliki WAIC sebesar **1628.218**.
+
+    -   Model 2 memiliki WAIC sebesar **1624.882**.\
+        → Perbedaan ini menunjukkan bahwa Model 2 memiliki performa yang sedikit lebih baik dalam menyesuaikan data sambil menghindari overfitting.
+
+-   **DIC:**
+
+    -   Model 1 memiliki DIC sebesar **1612**.
+
+    -   Model 2 memiliki DIC sebesar **1610**.\
+        → Perbedaan kecil ini juga menunjukkan bahwa Model 2 lebih unggul dibandingkan Model 1 dalam hal kesesuaian model.
+
+**3. Kesimpulan**
+
+-   **Model 2 lebih baik dibandingkan Model 1**, meskipun perbedaannya sangat kecil.
+
+-   Dalam kasus seperti ini, jika tidak ada alasan kuat (misalnya, interpretasi model atau kemudahan implementasi), Model 2 dapat dipilih karena memiliki nilai WAIC dan DIC yang lebih rendah.
